@@ -1,5 +1,8 @@
 test_that("bayesian threshold reproduces UK pairwise structure", {
 
+  data("UKdat", package = "MultipleSystemsEstimation")
+  data("Kosovo", package = "MultipleSystemsEstimation")
+
   res <- estimate_population_bayesthresh(
     UKdat,
     prior = "proper",
