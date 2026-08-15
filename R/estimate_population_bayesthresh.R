@@ -1,28 +1,32 @@
-#' Estimate population size by Bayesian thresholding
+#' Bayesian-threshold multiple-systems estimation
 #'
-#' #' Implements the Bayesian threshold method of Silverman (2020) for
-#' pairwise interactions, with an extension to three-way interactions.
+#' Fits the Bayesian threshold estimator of Silverman (2020), with optional
+#' three-way interactions.  Pairwise interactions are thresholded first.
+#' A three-way interaction is considered only when all three constituent
+#' pairwise interactions survive the pairwise threshold.
+#'
+#' With an improper prior, any interaction having zero sufficient statistic
+#' is assigned the limiting value minus infinity, removed from the fitted
+#' model, and all likelihood cells containing that interaction are removed.
+#' The same rule applies to pairwise and three-way interactions.
 #'
 #' @param zdat Multiple-systems data in the usual
 #'   MultipleSystemsEstimation format.
-#' @param prior Either "proper" or "improper".
-#' @param prior_variance Prior variance for pairwise interaction terms
-#'   when a proper prior is used.
-#' @param main_variance Prior variance for the intercept and main effects
-#'   when a proper prior is used.
-#' @param threshold Threshold applied to
-#'   abs(posterior mean / posterior SD).
-#' @param maxorder Maximum interaction order. Currently either 2 or 3.
-#'   If 2, only pairwise interactions are considered. If 3, pairwise
-#'   interactions are thresholded first; three-way interactions are then
-#'   considered only when all three constituent pairwise interactions
-#'   have survived the first thresholding stage.
-#' @param ... Additional arguments passed to MCMCpoisson().
+#' @param prior Either `"proper"` or `"improper"`.
+#' @param prior_variance Prior variance for interaction terms when a proper
+#'   prior is used.
+#' @param main_variance Prior variance for the intercept and main effects when
+#'   a proper prior is used.
+#' @param threshold Threshold applied to the absolute posterior mean divided
+#'   by posterior standard deviation for interaction parameters.
+#' @param maxorder Maximum interaction order, either 2 or 3.
+#' @param ... Additional arguments passed to
+#'   \code{MCMCpack::MCMCpoisson()}.
 #'
-#' @importFrom MultipleSystemsEstimation encode_capture decode_capture
-#'   convert_to_hierarchy convert_from_hierarchy
-#' @importFrom stats quantile reformulate
-#' @importFrom utils combn
+#' @return A list containing the posterior median population estimate,
+#'   posterior quantiles and draws, retained pairwise and three-way
+#'   interactions, threshold statistics, and effects removed under an
+#'   improper prior.
 #'
 #' @export
 estimate_population_bayesthresh <- function(
@@ -34,796 +38,167 @@ estimate_population_bayesthresh <- function(
     maxorder = 2,
     ...
 ) {
+    prior <- match.arg(prior)
 
-  prior <- match.arg(prior)
+    if (!maxorder %in% c(2, 3))
+        stop("maxorder must be either 2 or 3.")
 
-  # Full completed contingency table.
-  # Keep this unchanged because it is needed for the observed population total.
-  zfull <- .bayesthresh_prepare_data(zdat)
-
-  nlists <- ncol(zfull) - 1
-  if (!maxorder %in% c(2, 3)) {
-    stop("maxorder must be either 2 or 3.")
-  }
-
-  if (maxorder == 3 && nlists < 4) {
-    stop("Three-way interactions require at least four lists.")
-  }
-
-  # Construct the full pairwise model.
-  model <- .bayesthresh_full_pairwise_model(zfull)
-
-  terms <- .bayesthresh_model_terms(
-    model,
-    nlists = nlists
-  )
-
-  design <- .bayesthresh_design_matrix(
-    zfull,
-    terms
-  )
-
-  # By default the likelihood uses the full table.
-  zfit <- zfull
-  removed_pairs <- character(0)
-
-  # For the improper prior, remove zero-overlap interactions
-  # and all cells containing those pairs.
-  if (prior == "improper") {
-
-    improper_setup <- .bayesthresh_improper_setup(
-      zfull,
-      terms,
-      design
+    zfull <- MultipleSystemsEstimation::tidy_lists(
+        zdat,
+        includezerocounts = TRUE
     )
 
-    zfit <- improper_setup$data
-    model <- improper_setup$model
-    terms <- improper_setup$terms
-    design <- improper_setup$design
-    removed_pairs <- improper_setup$removed_pairs
-  }
+    nlists <- ncol(zfull) - 1
 
-  # First-stage MCMC fit.
-  first_fit <- .bayesthresh_first_fit(
-    zfit,
-    design,
-    terms,
-    prior = prior,
-    prior_variance = prior_variance,
-    main_variance = main_variance,
-    ...
-  )
+    if (maxorder == 3 && nlists < 3)
+        stop("Three-way interactions require at least three lists.")
 
-  # Threshold the pairwise interactions.
-  threshold_result <- .bayesthresh_threshold_interactions(
-    first_fit,
-    design,
-    terms,
-    threshold = threshold
-  )
-
-  # If requested, identify three-way interactions whose
-  # three constituent pairs all survived the pairwise threshold.
-  admissible_triples <- numeric(0)
-
-  third_model <- NULL
-  third_terms <- NULL
-  third_design <- NULL
-  third_fit <- NULL
-
-
-
-  if (maxorder == 3) {
-    admissible_triples <- .bayesthresh_admissible_triples(
-      threshold_result$retained_effects,
-      nlists
-    )
-  }
-
-  # Construct the thresholded hierarchical model.
-  reduced_model <- .bayesthresh_reduced_model(
-    terms,
-    threshold_result,
-    nlists
-  )
-
-  reduced_terms <- .bayesthresh_model_terms(
-    reduced_model,
-    nlists
-  )
-
-  # Important: for the improper case this must use zfit,
-  # not the original full table.
-  reduced_design <- .bayesthresh_design_matrix(
-    zfit,
-    reduced_terms
-  )
-
-  # Second-stage MCMC fit.
-  second_fit <- .bayesthresh_first_fit(
-    zfit,
-    reduced_design,
-    reduced_terms,
-    prior = prior,
-    prior_variance = prior_variance,
-    main_variance = main_variance,
-    ...
-  )
-  triple_threshold_result <- NULL
-  final_model <- reduced_model
-  final_terms <- reduced_terms
-  final_design <- reduced_design
-  final_fit <- second_fit
-
-  if (maxorder == 3 && length(admissible_triples) > 0) {
-
-    third_model <- .bayesthresh_third_fit_model(
-      reduced_terms,
-      admissible_triples,
-      nlists
+    # Stage 1: fit all pairwise interactions.
+    pair_candidates <- .bayesthresh_all_effects(
+        nlists,
+        2
     )
 
-    third_terms <- .bayesthresh_model_terms(
-      third_model,
-      nlists
+    fit1 <- .bayesthresh_fit(
+        zfull,
+        pair_candidates,
+        prior,
+        prior_variance,
+        main_variance,
+        prune_improper = TRUE,
+        ...
     )
 
-    third_design <- .bayesthresh_design_matrix(
-      zfit,
-      third_terms
-    )
-
-    third_fit <- .bayesthresh_first_fit(
-      zfit,
-      third_design,
-      third_terms,
-      prior = prior,
-      prior_variance = prior_variance,
-      main_variance = main_variance,
-      ...
-    )
-
-    triple_threshold_result <- .bayesthresh_threshold_triples(
-      third_fit,
-      third_design,
-      third_terms,
-      threshold = threshold,
-      nlists = nlists
-    )
-
-    final_model <- .bayesthresh_final_model(
-      reduced_terms,
-      triple_threshold_result,
-      nlists
-    )
-
-    final_terms <- .bayesthresh_model_terms(
-      final_model,
-      nlists
-    )
-
-    final_design <- .bayesthresh_design_matrix(
-      zfit,
-      final_terms
-    )
-
-    final_fit <- .bayesthresh_first_fit(
-      zfit,
-      final_design,
-      final_terms,
-      prior = prior,
-      prior_variance = prior_variance,
-      main_variance = main_variance,
-      ...
-    )
-  }
-  # Population total must use the ORIGINAL complete table,
-  # not zfit, because all observed cases remain part of the population.
-  population <- .bayesthresh_population_summary(
-    final_fit,
-    zfull
-  )
-
-  # Verbose return object while the method is under development.
-  return(
-    list(
-      popest = unname(population$quantiles["50%"]),
-      quantiles = population$quantiles,
-      model = final_model,
-      retained_interactions = threshold_result$retained,
-      retained_triples =
-        if (is.null(triple_threshold_result))
-          character(0)
-      else
-        triple_threshold_result$retained,
-      threshold_statistics = threshold_result$ratios,
-      removed_pairs = removed_pairs,
-      posterior = population$total_population,
-      admissible_triples = admissible_triples,
-      third_model = third_model,
-      third_terms = third_terms,
-      third_design = third_design,
-      third_fit = third_fit,
-      triple_threshold_result = triple_threshold_result,
-      final_model = final_model,
-      final_terms = final_terms,
-      final_design = final_design,
-      final_fit = final_fit
-    )
-  )
-}
-
-.bayesthresh_prepare_data <- function(zdat) {
-  MultipleSystemsEstimation::tidy_lists(
-    zdat,
-    includezerocounts = TRUE
-  )
-}
-
-.bayesthresh_pair_counts <- function(zfull) {
-
-  nlists <- ncol(zfull) - 1
-  list_names <- colnames(zfull)[seq_len(nlists)]
-  counts <- zfull[[nlists + 1]]
-
-  pairs <- combn(seq_len(nlists), 2)
-
-  pair_counts <- apply(
-    pairs,
-    2,
-    function(ij) {
-      sum(
-        counts *
-          zfull[[ij[1]]] *
-          zfull[[ij[2]]]
-      )
-    }
-  )
-
-  names(pair_counts) <- apply(
-    pairs,
-    2,
-    function(ij) paste(list_names[ij], collapse = ":")
-  )
-
-  pair_counts
-}
-
-.bayesthresh_full_pairwise_model <- function(zfull) {
-
-  nlists <- ncol(zfull) - 1
-
-  main_effects <- vapply(
-    seq_len(nlists),
-    function(i) {
-      z <- integer(nlists)
-      z[i] <- 1L
-      encode_capture(z)
-    },
-    numeric(1)
-  )
-
-  pairs <- combn(seq_len(nlists), 2)
-
-  pair_effects <- apply(
-    pairs,
-    2,
-    function(ij) {
-      z <- integer(nlists)
-      z[ij] <- 1L
-      encode_capture(z)
-    }
-  )
-
-  convert_to_hierarchy(
-    c(main_effects, pair_effects),
-    nlists = nlists
-  )
-}
-
-.bayesthresh_model_terms <- function(model, nlists) {
-
-  effects <- convert_from_hierarchy(model)
-
-  decoded <- lapply(
-    effects,
-    decode_capture,
-    nlists = nlists
-  )
-
-  orders <- vapply(decoded, sum, numeric(1))
-
-  list(
-    main = effects[orders == 1],
-    interactions = effects[orders >= 2]
-  )
-}
-
-.bayesthresh_design_matrix <- function(zfull, terms) {
-
-  nlists <- ncol(zfull) - 1
-  x <- as.matrix(zfull[, seq_len(nlists), drop = FALSE])
-
-  effects <- c(terms$main, terms$interactions)
-
-  effect_patterns <- lapply(
-    effects,
-    decode_capture,
-    nlists = nlists
-  )
-
-  modmat <- vapply(
-    effect_patterns,
-    function(pattern) {
-      rows_needed <- which(pattern)
-      apply(x[, rows_needed, drop = FALSE], 1, prod)
-    },
-    numeric(nrow(x))
-  )
-
-  modmat <- cbind("(Intercept)" = 1, modmat)
-
-  term_names <- vapply(
-    effect_patterns,
-    function(pattern) {
-      paste(colnames(x)[which(pattern)], collapse = ":")
-    },
-    character(1)
-  )
-
-  colnames(modmat) <- c(
-    "(Intercept)",
-    term_names
-  )
-
-  modmat
-}
-
-.bayesthresh_mcmc_data <- function(zfull, design) {
-
-  x <- design[, -1, drop = FALSE]
-
-  colnames(x) <- paste0("x", seq_len(ncol(x)))
-
-  out <- as.data.frame(x)
-  out$y <- zfull[[ncol(zfull)]]
-
-  out
-}
-
-.bayesthresh_prior_precision <- function(
-    terms,
-    prior_variance = 1,
-    main_variance = 1e4
-) {
-
-  nmain <- length(terms$main)
-  ninteractions <- length(terms$interactions)
-
-  diag(c(
-    rep(1 / main_variance, 1 + nmain),
-    rep(1 / prior_variance, ninteractions)
-  ))
-}
-
-.bayesthresh_start_values <- function(zfull, design) {
-
-  nobs <- sum(zfull[[ncol(zfull)]])
-
-  x <- design[, -1, drop = FALSE]
-  nmain <- ncol(zfull) - 1
-
-  # Intercept and main-effect starting values,
-  # following the strategy used in the original implementation.
-  main_counts <- as.numeric(
-    t(as.matrix(zfull[, seq_len(nmain), drop = FALSE])) %*%
-      zfull[[ncol(zfull)]]
-  )
-
-  start <- c(
-    log(nobs * 5),
-    log(main_counts / (nobs * 5))
-  )
-
-  # Start all interaction effects at zero.
-  ninteractions <- ncol(x) - nmain
-
-  c(
-    start,
-    rep(0, ninteractions)
-  )
-}
-
-.bayesthresh_first_fit <- function(
-    zfull,
-    design,
-    terms,
-    prior = "proper",
-    prior_variance = 1,
-    main_variance = 1e4,
-    ...
-) {
-
-  mcmc_data <- .bayesthresh_mcmc_data(
-    zfull,
-    design
-  )
-
-  predictor_names <- paste0(
-    "x",
-    seq_len(ncol(design) - 1)
-  )
-
-  form <- reformulate(
-    predictor_names,
-    response = "y"
-  )
-
-  if (prior == "improper") {
-
-    B0 <- 0
-
-  } else {
-
-    B0 <- .bayesthresh_prior_precision(
-      terms,
-      prior_variance = prior_variance,
-      main_variance = main_variance
-    )
-  }
-
-  beta_start <- .bayesthresh_start_values(
-    zfull,
-    design
-  )
-
-  fit <- withCallingHandlers(
-    MCMCpack::MCMCpoisson(
-      formula = form,
-      data = mcmc_data,
-      B0 = B0,
-      beta.start = beta_start,
-      ...
-    ),
-    warning = function(w) {
-      if (grepl(
-        "fitted rates numerically 0 occurred",
-        conditionMessage(w),
-        fixed = TRUE
-      )) {
-        invokeRestart("muffleWarning")
-      }
-    }
-  )
-
-  fit
-}
-
-.bayesthresh_threshold_interactions <- function(
-    first_fit,
-    design,
-    terms,
-    threshold = 2
-) {
-
-  stats <- summary(first_fit)$statistics
-
-  nmain <- length(terms$main)
-
-  interaction_rows <- (nmain + 2):nrow(stats)
-
-  interaction_stats <- stats[
-    interaction_rows,
-    ,
-    drop = FALSE
-  ]
-
-  ratios <- abs(
-    interaction_stats[, "Mean"] /
-      interaction_stats[, "SD"]
-  )
-
-  interaction_names <- colnames(design)[interaction_rows]
-
-  names(ratios) <- interaction_names
-
-  keep <- ratios >= threshold
-
-  list(
-    ratios = ratios,
-    retained = names(ratios)[keep],
-    dropped = names(ratios)[!keep],
-    retained_effects = terms$interactions[keep],
-    dropped_effects = terms$interactions[!keep]
-  )
-}
-
-.bayesthresh_reduced_model <- function(
-    terms,
-    threshold_result,
-    nlists
-) {
-
-  convert_to_hierarchy(
-    c(
-      terms$main,
-      threshold_result$retained_effects
-    ),
-    nlists = nlists
-  )
-}
-
-.bayesthresh_population_summary <- function(
-    second_fit,
-    zfull,
-    probs = c(0.025, 0.1, 0.5, 0.9, 0.975)
-) {
-
-  nobserved <- sum(zfull[[ncol(zfull)]])
-
-  mu_draws <- second_fit[, "(Intercept)"]
-
-  dark_figure <- exp(mu_draws)
-  total_population <- nobserved + dark_figure
-
-  list(
-    nobserved = nobserved,
-    dark_figure = dark_figure,
-    total_population = total_population,
-    quantiles = quantile(
-      total_population,
-      probs = probs
-    )
-  )
-}
-
-.bayesthresh_remove_empty_overlaps <- function(zfull) {
-
-  nlists <- ncol(zfull) - 1
-  list_names <- colnames(zfull)[seq_len(nlists)]
-
-  pair_counts <- .bayesthresh_pair_counts(zfull)
-  empty_pairs <- which(pair_counts == 0)
-
-  if (length(empty_pairs) == 0) {
-    return(
-      list(
-        data = zfull,
-        removed_pairs = character(0),
-        removed_pair_indices = matrix(integer(0), nrow = 2)
-      )
-    )
-  }
-
-  pairs <- combn(seq_len(nlists), 2)
-  empty_pair_indices <- pairs[, empty_pairs, drop = FALSE]
-
-  keep <- rep(TRUE, nrow(zfull))
-
-  for (k in seq_len(ncol(empty_pair_indices))) {
-    ij <- empty_pair_indices[, k]
-
-    contains_pair <-
-      zfull[[ij[1]]] == 1 &
-      zfull[[ij[2]]] == 1
-
-    keep[contains_pair] <- FALSE
-  }
-
-  removed_pairs <- apply(
-    empty_pair_indices,
-    2,
-    function(ij) paste(list_names[ij], collapse = ":")
-  )
-
-  list(
-    data = zfull[keep, , drop = FALSE],
-    removed_pairs = removed_pairs,
-    removed_pair_indices = empty_pair_indices
-  )
-}
-
-.bayesthresh_improper_setup <- function(
-    zfull,
-    terms,
-    design
-) {
-
-  empty <- .bayesthresh_remove_empty_overlaps(zfull)
-
-  nlists <- ncol(zfull) - 1
-  nmain <- length(terms$main)
-
-  interaction_names <- colnames(design)[
-    (nmain + 2):ncol(design)
-  ]
-
-  keep_interactions <-
-    !interaction_names %in% empty$removed_pairs
-
-  retained_effects <-
-    terms$interactions[keep_interactions]
-
-  model <- convert_to_hierarchy(
-    c(
-      terms$main,
-      retained_effects
-    ),
-    nlists = nlists
-  )
-
-  new_terms <- .bayesthresh_model_terms(
-    model,
-    nlists
-  )
-
-  new_design <- .bayesthresh_design_matrix(
-    empty$data,
-    new_terms
-  )
-
-  list(
-    data = empty$data,
-    model = model,
-    terms = new_terms,
-    design = new_design,
-    removed_pairs = empty$removed_pairs
-  )
-}
-
-.bayesthresh_admissible_triples <- function(
-    retained_effects,
-    nlists
-) {
-
-  if (nlists < 3) {
-    return(numeric(0))
-  }
-
-  triples <- combn(seq_len(nlists), 3)
-
-  admissible <- apply(
-    triples,
-    2,
-    function(ijk) {
-
-      required_pairs <- combn(ijk, 2)
-
-      pair_codes <- apply(
-        required_pairs,
+    pair_threshold <- .bayesthresh_threshold(
+        fit1$fit,
+        fit1$effects,
         2,
-        function(ij) {
-          z <- integer(nlists)
-          z[ij] <- 1L
-          encode_capture(z)
+        threshold
+    )
+
+    pairs <- pair_threshold$retained
+
+    # For an improper prior, all later fits start from the likelihood
+    # table pruned at the first stage.
+    zrefit <- if (prior == "improper") fit1$data else zfull
+
+    # Stage 2: refit the retained pairwise model.
+    fit2 <- .bayesthresh_fit(
+        zrefit,
+        pairs,
+        prior,
+        prior_variance,
+        main_variance,
+        prune_improper = FALSE,
+        ...
+    )
+
+    final_fit <- fit2
+    triple_candidates <- character(0)
+    triple_threshold <- NULL
+    triples <- character(0)
+    removed_triples <- character(0)
+
+    # Stage 3: consider admissible three-way effects.
+    if (maxorder == 3) {
+        triple_candidates <- .bayesthresh_admissible_triples(
+            pairs,
+            nlists
+        )
+
+        if (length(triple_candidates)) {
+            fit3 <- .bayesthresh_fit(
+                zrefit,
+                c(pairs, triple_candidates),
+                prior,
+                prior_variance,
+                main_variance,
+                prune_improper = (prior == "improper"),
+                ...
+            )
+
+            removed_triples <- fit3$removed[
+                .bayesthresh_order(fit3$removed) == 3
+            ]
+
+            triple_threshold <- .bayesthresh_threshold(
+                fit3$fit,
+                fit3$effects,
+                3,
+                threshold
+            )
+
+            triples <- triple_threshold$retained
+
+            final_fit <- .bayesthresh_fit(
+                fit3$data,
+                c(pairs, triples),
+                prior,
+                prior_variance,
+                main_variance,
+                prune_improper = FALSE,
+                ...
+            )
         }
-      )
-
-      all(pair_codes %in% retained_effects)
     }
-  )
 
-  if (!any(admissible)) {
-    return(numeric(0))
-  }
+    population <- .bayesthresh_population(
+        final_fit$fit,
+        zfull
+    )
 
-  apply(
-    triples[, admissible, drop = FALSE],
-    2,
-    function(ijk) {
-      z <- integer(nlists)
-      z[ijk] <- 1L
-      encode_capture(z)
-    }
-  )
-}
+    removed_pairs <- fit1$removed[
+        .bayesthresh_order(fit1$removed) == 2
+    ]
 
-.bayesthresh_third_fit_model <- function(
-    pair_terms,
-    admissible_triples,
-    nlists
-) {
+    list(
+        popest = unname(population$quantiles["50%"]),
+        quantiles = population$quantiles,
+        posterior = population$total_population,
 
-  convert_to_hierarchy(
-    c(
-      pair_terms$main,
-      pair_terms$interactions,
-      admissible_triples
-    ),
-    nlists = nlists
-  )
-}
+        retained_interactions =
+            .bayesthresh_pretty(pairs, zfull),
 
-.bayesthresh_threshold_triples <- function(
-    third_fit,
-    third_design,
-    third_terms,
-    threshold = 2,
-    nlists
-) {
+        retained_triples =
+            .bayesthresh_pretty(triples, zfull),
 
-  stats <- summary(third_fit)$statistics
+        threshold_statistics =
+            .bayesthresh_pretty_named(
+                pair_threshold$ratios,
+                zfull
+            ),
 
-  interaction_effects <- third_terms$interactions
+        triple_threshold_statistics =
+            if (is.null(triple_threshold))
+                numeric(0)
+            else
+                .bayesthresh_pretty_named(
+                    triple_threshold$ratios,
+                    zfull
+                ),
 
-  interaction_patterns <- lapply(
-    interaction_effects,
-    decode_capture,
-    nlists = nlists
-  )
+        removed_pairs =
+            .bayesthresh_pretty(
+                removed_pairs,
+                zfull
+            ),
 
-  interaction_orders <- vapply(
-    interaction_patterns,
-    sum,
-    numeric(1)
-  )
+        removed_triples =
+            .bayesthresh_pretty(
+                removed_triples,
+                zfull
+            ),
 
-  triple_effects <- interaction_effects[
-    interaction_orders == 3
-  ]
+        removed_effects =
+            .bayesthresh_pretty(
+                unique(c(removed_pairs, removed_triples)),
+                zfull
+            ),
 
-  triple_names <- vapply(
-    triple_effects,
-    function(effect) {
-      pattern <- decode_capture(
-        effect,
-        nlists = nlists
-      )
-
-      paste(
-        colnames(third_design)[
-          1 + which(pattern)
-        ],
-        collapse = ":"
-      )
-    },
-    character(1)
-  )
-
-  term_names <- colnames(third_design)[-1]
-
-  triple_rows <- match(
-    triple_names,
-    term_names
-  ) + 1
-
-  triple_stats <- stats[
-    triple_rows,
-    ,
-    drop = FALSE
-  ]
-
-  ratios <- abs(
-    triple_stats[, "Mean"] /
-      triple_stats[, "SD"]
-  )
-
-  names(ratios) <- triple_names
-
-  keep <- ratios >= threshold
-
-  list(
-    ratios = ratios,
-    retained = names(ratios)[keep],
-    dropped = names(ratios)[!keep],
-    retained_effects = triple_effects[keep],
-    dropped_effects = triple_effects[!keep]
-  )
-}
-
-.bayesthresh_final_model <- function(
-    reduced_terms,
-    triple_threshold_result,
-    nlists
-) {
-
-  convert_to_hierarchy(
-    c(
-      reduced_terms$main,
-      reduced_terms$interactions,
-      triple_threshold_result$retained_effects
-    ),
-    nlists = nlists
-  )
+        admissible_triples =
+            .bayesthresh_pretty(
+                triple_candidates,
+                zfull
+            )
+    )
 }

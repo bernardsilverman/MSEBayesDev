@@ -2,7 +2,7 @@
 % Please edit documentation in R/estimate_population_bayesthresh.R
 \name{estimate_population_bayesthresh}
 \alias{estimate_population_bayesthresh}
-\title{Estimate population size by Bayesian thresholding}
+\title{Bayesian-threshold multiple-systems estimation}
 \usage{
 estimate_population_bayesthresh(
   zdat,
@@ -18,26 +18,37 @@ estimate_population_bayesthresh(
 \item{zdat}{Multiple-systems data in the usual
 MultipleSystemsEstimation format.}
 
-\item{prior}{Either "proper" or "improper".}
+\item{prior}{Either `"proper"` or `"improper"`.}
 
-\item{prior_variance}{Prior variance for pairwise interaction terms
-when a proper prior is used.}
+\item{prior_variance}{Prior variance for interaction terms when a proper
+prior is used.}
 
-\item{main_variance}{Prior variance for the intercept and main effects
-when a proper prior is used.}
+\item{main_variance}{Prior variance for the intercept and main effects when
+a proper prior is used.}
 
-\item{threshold}{Threshold applied to
-abs(posterior mean / posterior SD).}
+\item{threshold}{Threshold applied to the absolute posterior mean divided
+by posterior standard deviation for interaction parameters.}
 
-\item{maxorder}{Maximum interaction order. Currently either 2 or 3.
-If 2, only pairwise interactions are considered. If 3, pairwise
-interactions are thresholded first; three-way interactions are then
-considered only when all three constituent pairwise interactions
-have survived the first thresholding stage.}
+\item{maxorder}{Maximum interaction order, either 2 or 3.}
 
-\item{...}{Additional arguments passed to MCMCpoisson().}
+\item{...}{Additional arguments passed to
+\code{MCMCpack::MCMCpoisson()}.}
+}
+\value{
+A list containing the posterior median population estimate,
+  posterior quantiles and draws, retained pairwise and three-way
+  interactions, threshold statistics, and effects removed under an
+  improper prior.
 }
 \description{
-#' Implements the Bayesian threshold method of Silverman (2020) for
-pairwise interactions, with an extension to three-way interactions.
+Fits the Bayesian threshold estimator of Silverman (2020), with optional
+three-way interactions.  Pairwise interactions are thresholded first.
+A three-way interaction is considered only when all three constituent
+pairwise interactions survive the pairwise threshold.
+}
+\details{
+With an improper prior, any interaction having zero sufficient statistic
+is assigned the limiting value minus infinity, removed from the fitted
+model, and all likelihood cells containing that interaction are removed.
+The same rule applies to pairwise and three-way interactions.
 }
