@@ -400,3 +400,47 @@
         )
     )
 }
+
+
+.bayesthresh_check_pair_start <- function(zfull) {
+    ierr <- MultipleSystemsEstimation::check_identifiability(
+        zfull,
+        mX = 0,
+        verbose = FALSE
+    )
+
+    if (ierr != 0)
+        stop(
+            paste(
+                "Bayesian thresholding cannot be applied:",
+                "the full pairwise model fails the",
+                "Fienberg-Rinaldo existence criterion."
+            ),
+            call. = FALSE
+        )
+
+    invisible(TRUE)
+}
+
+
+.bayesthresh_check_triple_start <- function(zfull, effects) {
+    nlists <- ncol(zfull) - 1
+
+    roots <- vapply(
+        effects,
+        function(effect) {
+            capture <- integer(nlists)
+            capture[.bayesthresh_indices(effect)] <- 1L
+            MultipleSystemsEstimation::encode_capture(capture)
+        },
+        numeric(1)
+    )
+
+    parset <- sort(unique(
+        MultipleSystemsEstimation::ancestors(roots, nlists)
+    ))
+
+    datlist <- MultipleSystemsEstimation:::ingest_data(zfull)
+
+    MultipleSystemsEstimation:::checkident.1(parset, datlist) > 0
+}

@@ -1,13 +1,9 @@
 test_that("Bayesian threshold regression agrees on UKdat_5", {
     skip_if_not_installed("MCMCpack")
 
-  data(
-    "UKdat_5",
-    package = "MultipleSystemsEstimation",
-    envir = environment()
-  )
+  data("UKdat_5", package = "MultipleSystemsEstimation")
 
-  fit <- estimate_population_bayesthresh(
+    fit <- estimate_population_bayesthresh(
         UKdat_5,
         prior = "improper",
         maxorder = 3,
@@ -62,7 +58,7 @@ test_that("zero sufficient statistic three-way effect is removed", {
     z <- z[rowSums(z) > 0, , drop = FALSE]
     z$count <- seq_len(nrow(z)) + 3L
 
-    # A:B:C has zero sufficient statistic, while all pairwise
+    # A:B:C has zero sufficient statistic, while all its pairwise
     # sufficient statistics remain positive.
     z$count[
         z$A == 1 &
@@ -70,44 +66,38 @@ test_that("zero sufficient statistic three-way effect is removed", {
         z$C == 1
     ] <- 0L
 
+    sufficient_stat <- function(vars) {
+        active <- apply(
+            as.matrix(z[, vars, drop = FALSE]),
+            1,
+            prod
+        )
+        sum(z$count * active)
+    }
+
+    expect_true(all(c(
+        sufficient_stat(c("A", "B")),
+        sufficient_stat(c("A", "C")),
+        sufficient_stat(c("B", "C"))
+    ) > 0))
+
+    expect_equal(
+        sufficient_stat(c("A", "B", "C")),
+        0
+    )
+
     pairs <- .bayesthresh_all_effects(4, 2)
     triples <- .bayesthresh_all_effects(4, 3)
-
-    pair_stats <- vapply(
-        pairs,
-        function(e)
-            .bayesthresh_sufficient_stat(z, e),
-        numeric(1)
-    )
-
-    triple_stats <- vapply(
-        triples,
-        function(e)
-            .bayesthresh_sufficient_stat(z, e),
-        numeric(1)
-    )
-
-    names(triple_stats) <- .bayesthresh_pretty(
-        triples,
-        z
-    )
-
-    expect_true(all(pair_stats > 0))
-    expect_equal(unname(triple_stats["A:B:C"]), 0)
 
     setup <- .bayesthresh_remove_zero_effects(
         z,
         c(pairs, triples)
     )
 
-    removed <- .bayesthresh_pretty(
-        setup$removed,
-        z
-    )
+    expect_true("x1:x2:x3" %in% setup$removed)
 
-    expect_true("A:B:C" %in% removed)
     expect_false(any(
-        c("A:B", "A:C", "B:C") %in% removed
+        c("x1:x2", "x1:x3", "x2:x3") %in% setup$removed
     ))
 
     expect_false(any(

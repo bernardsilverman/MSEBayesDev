@@ -6,11 +6,12 @@
 \usage{
 estimate_population_bayesthresh(
   zdat,
-  prior = c("proper", "improper"),
+  prior = "proper",
   prior_variance = 1,
   main_variance = 10000,
   threshold = 2,
   maxorder = 2,
+  return_posterior = FALSE,
   ...
 )
 }
@@ -18,7 +19,7 @@ estimate_population_bayesthresh(
 \item{zdat}{Multiple-systems data in the usual
 MultipleSystemsEstimation format.}
 
-\item{prior}{Either `"proper"` or `"improper"`.}
+\item{prior}{Either \code{"proper"} (the default) or \code{"improper"}.}
 
 \item{prior_variance}{Prior variance for interaction terms when a proper
 prior is used.}
@@ -26,29 +27,94 @@ prior is used.}
 \item{main_variance}{Prior variance for the intercept and main effects when
 a proper prior is used.}
 
-\item{threshold}{Threshold applied to the absolute posterior mean divided
-by posterior standard deviation for interaction parameters.}
+\item{threshold}{Threshold applied to the absolute posterior mean to
+standard deviation ratio for interaction parameters.}
 
 \item{maxorder}{Maximum interaction order, either 2 or 3.}
 
-\item{...}{Additional arguments passed to
-\code{MCMCpack::MCMCpoisson()}.}
+\item{return_posterior}{Logical. If \code{TRUE}, include the full posterior
+sample of the total population in the returned object. The default is
+\code{FALSE}.}
+
+\item{...}{Additional arguments passed to \code{MCMCpack::MCMCpoisson()}.
+Useful arguments include:
+\itemize{
+  \item \code{burnin}: number of burn-in iterations; default \code{1000}.
+  \item \code{mcmc}: number of MCMC iterations retained after burn-in;
+    default \code{10000}.
+  \item \code{thin}: thinning interval; default \code{1}.
+  \item \code{tune}: Metropolis tuning parameter; default \code{1.1}.
+  \item \code{seed}: random-number seed; default \code{NA}.
+}}
 }
 \value{
-A list containing the posterior median population estimate,
-  posterior quantiles and draws, retained pairwise and three-way
-  interactions, threshold statistics, and effects removed under an
-  improper prior.
+A list containing \code{popest}, the posterior median population
+  estimate; posterior quantiles; retained pairwise and three-way
+  interactions; threshold statistics; and effects removed under an improper
+  prior. If \code{return_posterior = TRUE}, the full posterior sample of the
+  total population is also returned.
 }
 \description{
-Fits the Bayesian threshold estimator of Silverman (2020), with optional
-three-way interactions.  Pairwise interactions are thresholded first.
-A three-way interaction is considered only when all three constituent
-pairwise interactions survive the pairwise threshold.
+Fits the Bayesian threshold estimator of Silverman (2020), based on a
+Poisson log-linear model for the capture-pattern counts.
+A Bayesian/thresholding approach is adopted, with priors placed on the parameters
+in the log-linear model. Improper priors are used for the intercept and
+main effects.
+For the Bayesian parts of the procedure, inference is carried out by Markov chain
+Monte Carlo, calling \code{MCMCpack::MCMCpoisson()}.
+
+The method begins by including all pairwise interactions. The interactions are
+then thresholded, by discarding all those whose posterior mean to standard
+deviation ratio has absolute value below \code{threshold}. The model
+containing the retained interactions is then re-estimated, and the posterior
+distribution of the total population is obtained by adding the observed
+population to the posterior estimate of the unobserved cell.
 }
 \details{
-With an improper prior, any interaction having zero sufficient statistic
-is assigned the limiting value minus infinity, removed from the fitted
-model, and all likelihood cells containing that interaction are removed.
-The same rule applies to pairwise and three-way interactions.
+By default a proper normal prior is used for the log-linear parameters
+corresponding to pairwise and higher-order effects.
+Setting \code{prior = "improper"} instead uses an improper flat prior. In
+that case interactions having zero sufficient statistic have posterior
+distribution concentrated at minus infinity.
+This is accounted for before
+carrying out the actual MCMC, as set out in Silverman (2020).
+
+If \code{maxorder = 3}, three-way interactions are also considered.
+Pairwise interactions are thresholded first. A
+three-way interaction is then eligible for consideration only if all three of
+its constituent pairwise interactions have been retained. The model
+containing the retained pairs and all eligible three-way interactions is
+then fitted, the three-way interactions are thresholded in the same way,
+and the resulting hierarchical model is refitted.
+
+In all cases, the full pairwise model is checked for identifiability and
+for the Fienberg-Rinaldo existence criterion before thresholding begins. If
+it fails, the procedure stops. With \code{maxorder = 3}, if the model
+containing all eligible three-way
+interactions fails the Fienberg-Rinaldo criterion, the procedure reverts to
+\code{maxorder = 2}.
+}
+\examples{
+data(Western, package = "MultipleSystemsEstimation")
+
+fit <- estimate_population_bayesthresh(
+    Western,
+    burnin = 100,
+    mcmc = 1000,
+    seed = 1234
+)
+fit$popest
+fit$retained_interactions
+
+}
+\references{
+Silverman, B. W. (2020). Multiple-systems analysis for the quantification of
+modern slavery: classical and Bayesian approaches. \emph{Journal of the
+Royal Statistical Society: Series A (Statistics in Society)}, 183, 691--736.
+
+Fienberg, S. E. and Rinaldo, A. (2012). Maximum likelihood estimation in
+log-linear models. \emph{The Annals of Statistics}, 40, 996--1023.
+
+Martin, A. D., Quinn, K. M. and Park, J. H. (2011). MCMCpack: Markov Chain
+Monte Carlo in R. \emph{Journal of Statistical Software}, 42(9), 1--21.
 }
