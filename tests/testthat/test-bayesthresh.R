@@ -43,7 +43,7 @@ test_that("Bayesian threshold regression agrees on UKdat_5", {
     )
 
     expect_length(fit$retained_triples, 0)
-    expect_identical(fit$removed_pairs, "LA:GP")
+    expect_identical(fit$minus_infinite_estimated_effects, "LA:GP")
 })
 
 

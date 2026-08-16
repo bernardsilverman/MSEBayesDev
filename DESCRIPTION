@@ -1,23 +1,27 @@
 Package: MSEBayesDev
 Type: Package
-Title: What the Package Does (Title Case)
+Title: Bayesian Threshold Multiple-Systems Estimation
 Version: 0.1.0
-Authors@R: c(
-    person(
-      "Jane", "Doe",
-      email = "jane@example.com",
-      role = c("aut", "cre")
-    )
+Authors@R: person(
+    "Bernard W.", "Silverman",
+    email = "bernard.silverman@stats.ox.ac.uk",
+    role = c("aut", "cre")
   )
-Description: More about what it does (maybe more than one line).
-    Continuation lines should be indented.
-License: What license is it under?
+Description: Implements Bayesian thresholding for multiple-systems estimation
+    using Poisson log-linear models and Markov chain Monte Carlo. Pairwise
+    interaction effects may be selected by posterior thresholding, with an
+    optional hierarchical extension to three-way interactions. Both proper
+    and improper priors for interaction effects are supported.
+License: GPL-3
 Encoding: UTF-8
 LazyData: true
 Imports:
     MCMCpack,
     MultipleSystemsEstimation
-Suggests: 
+Suggests:
+    knitr,
+    rmarkdown,
     testthat (>= 3.0.0)
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 RoxygenNote: 7.2.3

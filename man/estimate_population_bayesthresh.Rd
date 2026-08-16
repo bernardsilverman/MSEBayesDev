@@ -44,15 +44,59 @@ Useful arguments include:
     default \code{10000}.
   \item \code{thin}: thinning interval; default \code{1}.
   \item \code{tune}: Metropolis tuning parameter; default \code{1.1}.
-  \item \code{seed}: random-number seed; default \code{NA}.
+  \item \code{seed}: random-number seed. The default \code{NA} causes
+    \code{MCMCpack::MCMCpoisson()} to use the Mersenne Twister generator
+    with fixed seed 12345, so repeated calls with otherwise identical
+    arguments are reproducible. Supply another seed to obtain a different
+    MCMC run.
 }}
 }
 \value{
-A list containing \code{popest}, the posterior median population
-  estimate; posterior quantiles; retained pairwise and three-way
-  interactions; threshold statistics; and effects removed under an improper
-  prior. If \code{return_posterior = TRUE}, the full posterior sample of the
-  total population is also returned.
+A list with the following components:
+  \describe{
+    \item{\code{call}}{
+      The matched function call used to obtain the result.
+    }
+    \item{\code{popest}}{
+      Posterior median estimate of the total population size.
+    }
+    \item{\code{quantiles}}{
+      Posterior quantiles of the total population size.
+    }
+    \item{\code{retained_interactions}}{
+      Pairwise interaction effects retained by the thresholding procedure
+      and estimated by MCMC.
+    }
+    \item{\code{threshold_statistics}}{
+      Absolute posterior mean to posterior standard deviation ratios for
+      the pairwise interaction effects considered in the initial
+      thresholding step.
+    }
+    \item{\code{eligible_triples}}{
+      If \code{maxorder = 3}, the three-way interactions eligible for
+      consideration because all three constituent pairwise interactions
+      have been retained.
+    }
+    \item{\code{retained_triples}}{
+      If the third-order thresholding step is carried out, the eligible
+      three-way interactions retained by that thresholding step.
+    }
+    \item{\code{triple_threshold_statistics}}{
+      If the third-order thresholding step is carried out, the threshold
+      statistics for the eligible three-way interactions.
+    }
+    \item{\code{minus_infinite_estimated_effects}}{
+      With an improper prior, interaction effects whose posterior
+      distribution is concentrated at minus infinity. This component is
+      present only if such effects occur. These effects are retained in
+      the fitted model but are reported separately from
+      \code{retained_interactions}.
+    }
+    \item{\code{posterior}}{
+      If \code{return_posterior = TRUE}, the full posterior sample of the
+      total population size.
+    }
+  }
 }
 \description{
 Fits the Bayesian threshold estimator of Silverman (2020), based on a
@@ -75,9 +119,9 @@ By default a proper normal prior is used for the log-linear parameters
 corresponding to pairwise and higher-order effects.
 Setting \code{prior = "improper"} instead uses an improper flat prior. In
 that case interactions having zero sufficient statistic have posterior
-distribution concentrated at minus infinity.
-This is accounted for before
-carrying out the actual MCMC, as set out in Silverman (2020).
+distribution concentrated at minus infinity. Such effects are retained
+in the model but are accounted for separately before carrying out the
+actual MCMC, as set out in Silverman (2020).
 
 If \code{maxorder = 3}, three-way interactions are also considered.
 Pairwise interactions are thresholded first. A
@@ -90,9 +134,9 @@ and the resulting hierarchical model is refitted.
 In all cases, the full pairwise model is checked for identifiability and
 for the Fienberg-Rinaldo existence criterion before thresholding begins. If
 it fails, the procedure stops. With \code{maxorder = 3}, if the model
-containing all eligible three-way
-interactions fails the Fienberg-Rinaldo criterion, the procedure reverts to
-\code{maxorder = 2}.
+containing all eligible three-way interactions fails the Fienberg-Rinaldo
+criterion, the third-order fit is not carried out and the completed order-2
+analysis is returned, together with the eligible three-way interactions.
 }
 \examples{
 data(Western, package = "MultipleSystemsEstimation")

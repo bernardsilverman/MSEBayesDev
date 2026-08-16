@@ -353,7 +353,7 @@
 }
 
 
-.bayesthresh_admissible_triples <- function(pairs, nlists) {
+.bayesthresh_eligible_triples <- function(pairs, nlists) {
     triples <- .bayesthresh_all_effects(
         nlists,
         3

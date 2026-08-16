@@ -21,9 +21,9 @@
 #' corresponding to pairwise and higher-order effects.
 #' Setting \code{prior = "improper"} instead uses an improper flat prior. In
 #' that case interactions having zero sufficient statistic have posterior
-#' distribution concentrated at minus infinity.
-#' This is accounted for before
-#' carrying out the actual MCMC, as set out in Silverman (2020).
+#' distribution concentrated at minus infinity. Such effects are retained
+#' in the model but are accounted for separately before carrying out the
+#' actual MCMC, as set out in Silverman (2020).
 #'
 #' If \code{maxorder = 3}, three-way interactions are also considered.
 #' Pairwise interactions are thresholded first. A
@@ -36,9 +36,9 @@
 #' In all cases, the full pairwise model is checked for identifiability and
 #' for the Fienberg-Rinaldo existence criterion before thresholding begins. If
 #' it fails, the procedure stops. With \code{maxorder = 3}, if the model
-#' containing all eligible three-way
-#' interactions fails the Fienberg-Rinaldo criterion, the procedure reverts to
-#' \code{maxorder = 2}.
+#' containing all eligible three-way interactions fails the Fienberg-Rinaldo
+#' criterion, the third-order fit is not carried out and the completed order-2
+#' analysis is returned, together with the eligible three-way interactions.
 #'
 #' @param zdat Multiple-systems data in the usual
 #'   MultipleSystemsEstimation format.
@@ -61,14 +61,58 @@
 #'       default \code{10000}.
 #'     \item \code{thin}: thinning interval; default \code{1}.
 #'     \item \code{tune}: Metropolis tuning parameter; default \code{1.1}.
-#'     \item \code{seed}: random-number seed; default \code{NA}.
+#'     \item \code{seed}: random-number seed. The default \code{NA} causes
+#'       \code{MCMCpack::MCMCpoisson()} to use the Mersenne Twister generator
+#'       with fixed seed 12345, so repeated calls with otherwise identical
+#'       arguments are reproducible. Supply another seed to obtain a different
+#'       MCMC run.
 #'   }
 #'
-#' @return A list containing \code{popest}, the posterior median population
-#'   estimate; posterior quantiles; retained pairwise and three-way
-#'   interactions; threshold statistics; and effects removed under an improper
-#'   prior. If \code{return_posterior = TRUE}, the full posterior sample of the
-#'   total population is also returned.
+#' @return A list with the following components:
+#'   \describe{
+#'     \item{\code{call}}{
+#'       The matched function call used to obtain the result.
+#'     }
+#'     \item{\code{popest}}{
+#'       Posterior median estimate of the total population size.
+#'     }
+#'     \item{\code{quantiles}}{
+#'       Posterior quantiles of the total population size.
+#'     }
+#'     \item{\code{retained_interactions}}{
+#'       Pairwise interaction effects retained by the thresholding procedure
+#'       and estimated by MCMC.
+#'     }
+#'     \item{\code{threshold_statistics}}{
+#'       Absolute posterior mean to posterior standard deviation ratios for
+#'       the pairwise interaction effects considered in the initial
+#'       thresholding step.
+#'     }
+#'     \item{\code{eligible_triples}}{
+#'       If \code{maxorder = 3}, the three-way interactions eligible for
+#'       consideration because all three constituent pairwise interactions
+#'       have been retained.
+#'     }
+#'     \item{\code{retained_triples}}{
+#'       If the third-order thresholding step is carried out, the eligible
+#'       three-way interactions retained by that thresholding step.
+#'     }
+#'     \item{\code{triple_threshold_statistics}}{
+#'       If the third-order thresholding step is carried out, the threshold
+#'       statistics for the eligible three-way interactions.
+#'     }
+#'     \item{\code{minus_infinite_estimated_effects}}{
+#'       With an improper prior, interaction effects whose posterior
+#'       distribution is concentrated at minus infinity. This component is
+#'       present only if such effects occur. These effects are retained in
+#'       the fitted model but are reported separately from
+#'       \code{retained_interactions}.
+#'     }
+#'     \item{\code{posterior}}{
+#'       If \code{return_posterior = TRUE}, the full posterior sample of the
+#'       total population size.
+#'     }
+#'   }
 #'
 #' @references
 #' Silverman, B. W. (2020). Multiple-systems analysis for the quantification of
@@ -104,7 +148,8 @@ estimate_population_bayesthresh <- function(
     return_posterior = FALSE,
     ...
 ) {
-    prior <- match.arg(prior, c("proper", "improper"))
+  call <- match.call()
+  prior <- match.arg(prior, c("proper", "improper"))
 
     if (!maxorder %in% c(2, 3))
         stop("maxorder must be either 2 or 3.")
@@ -150,80 +195,87 @@ estimate_population_bayesthresh <- function(
     # table pruned at the first stage.
     zrefit <- if (prior == "improper") fit1$data else zfull
 
-    # Stage 2: refit the retained pairwise model.
-    fit2 <- .bayesthresh_fit(
-        zrefit,
-        pairs,
-        prior,
-        prior_variance,
-        main_variance,
-        prune_improper = FALSE,
-        ...
-    )
-
-    final_fit <- fit2
     triple_candidates <- character(0)
     triple_threshold <- NULL
     triples <- character(0)
     removed_triples <- character(0)
 
-    # Stage 3: consider admissible three-way effects.
+    # For maxorder = 3, try the three-way extension before doing the
+    # retained-pairwise refit.  This avoids an unnecessary MCMC fit when
+    # the three-way extension is successfully carried through.
     if (maxorder == 3) {
-        triple_candidates <- .bayesthresh_admissible_triples(
+        triple_candidates <- .bayesthresh_eligible_triples(
             pairs,
             nlists
         )
+    }
 
-        if (length(triple_candidates)) {
-            triple_start_ok <- .bayesthresh_check_triple_start(
-                zfull,
-                c(pairs, triple_candidates)
+    triple_start_ok <- FALSE
+
+    if (maxorder == 3 && length(triple_candidates)) {
+        triple_start_ok <- .bayesthresh_check_triple_start(
+            zfull,
+            c(pairs, triple_candidates)
+        )
+
+        if (!triple_start_ok) {
+            warning(
+                paste(
+                    "The maximal three-way extension fails the",
+                    "Fienberg-Rinaldo existence criterion;",
+                    "reverting to maxorder = 2."
+                ),
+                call. = FALSE
             )
-
-            if (!triple_start_ok) {
-                warning(
-                    paste(
-                        "The maximal three-way extension fails the",
-                        "Fienberg-Rinaldo existence criterion;",
-                        "reverting to maxorder = 2."
-                    ),
-                    call. = FALSE
-                )
-            } else {
-                fit3 <- .bayesthresh_fit(
-                zrefit,
-                c(pairs, triple_candidates),
-                prior,
-                prior_variance,
-                main_variance,
-                prune_improper = (prior == "improper"),
-                ...
-            )
-
-            removed_triples <- fit3$removed[
-                .bayesthresh_order(fit3$removed) == 3
-            ]
-
-            triple_threshold <- .bayesthresh_threshold(
-                fit3$fit,
-                fit3$effects,
-                3,
-                threshold
-            )
-
-            triples <- triple_threshold$retained
-
-            final_fit <- .bayesthresh_fit(
-                fit3$data,
-                c(pairs, triples),
-                prior,
-                prior_variance,
-                main_variance,
-                prune_improper = FALSE,
-                ...
-            )
-            }
         }
+    }
+
+    if (maxorder == 3 && length(triple_candidates) && triple_start_ok) {
+        fit3 <- .bayesthresh_fit(
+            zrefit,
+            c(pairs, triple_candidates),
+            prior,
+            prior_variance,
+            main_variance,
+            prune_improper = (prior == "improper"),
+            ...
+        )
+
+        removed_triples <- fit3$removed[
+            .bayesthresh_order(fit3$removed) == 3
+        ]
+
+        triple_threshold <- .bayesthresh_threshold(
+            fit3$fit,
+            fit3$effects,
+            3,
+            threshold
+        )
+
+        triples <- triple_threshold$retained
+
+        final_fit <- .bayesthresh_fit(
+            fit3$data,
+            c(pairs, triples),
+            prior,
+            prior_variance,
+            main_variance,
+            prune_improper = FALSE,
+            ...
+        )
+    } else {
+        # Final order-2 fit: used for maxorder = 2, when there are no
+        # eligible triples, or when the proposed three-way extension
+        # fails the Fienberg-Rinaldo check.
+        final_fit <- .bayesthresh_fit(
+            zrefit,
+            pairs,
+            prior,
+            prior_variance,
+            main_variance,
+            prune_improper = FALSE,
+            ...
+        )
     }
 
     population <- .bayesthresh_population(
@@ -236,54 +288,53 @@ estimate_population_bayesthresh <- function(
     ]
 
     ans <- list(
+      call = call,
         popest = unname(population$quantiles["50%"]),
         quantiles = population$quantiles,
 
         retained_interactions =
-            .bayesthresh_pretty(pairs, zfull),
+            .bayesthresh_pretty(pairs, zfull)
+    )
 
-        retained_triples =
-            .bayesthresh_pretty(triples, zfull),
-
-        threshold_statistics =
-            .bayesthresh_pretty_named(
-                pair_threshold$ratios,
-                zfull
-            ),
-
-        triple_threshold_statistics =
-            if (is.null(triple_threshold))
-                numeric(0)
-            else
-                .bayesthresh_pretty_named(
-                    triple_threshold$ratios,
-                    zfull
-                ),
-
-        removed_pairs =
-            .bayesthresh_pretty(
-                removed_pairs,
-                zfull
-            ),
-
-        removed_triples =
-            .bayesthresh_pretty(
-                removed_triples,
-                zfull
-            ),
-
-        removed_effects =
-            .bayesthresh_pretty(
-                unique(c(removed_pairs, removed_triples)),
-                zfull
-            ),
-
-        admissible_triples =
+    if (maxorder == 3) {
+        ans$eligible_triples <-
             .bayesthresh_pretty(
                 triple_candidates,
                 zfull
             )
-    )
+    }
+
+    if (!is.null(triple_threshold)) {
+        ans$retained_triples <-
+            .bayesthresh_pretty(triples, zfull)
+    }
+
+    ans$threshold_statistics <-
+        .bayesthresh_pretty_named(
+            pair_threshold$ratios,
+            zfull
+        )
+
+    if (!is.null(triple_threshold)) {
+        ans$triple_threshold_statistics <-
+            .bayesthresh_pretty_named(
+                triple_threshold$ratios,
+                zfull
+            )
+    }
+
+    if (prior == "improper") {
+        minus_infinite_effects <-
+            unique(c(removed_pairs, removed_triples))
+
+        if (length(minus_infinite_effects)) {
+            ans$minus_infinite_estimated_effects <-
+                .bayesthresh_pretty(
+                    minus_infinite_effects,
+                    zfull
+                )
+        }
+    }
 
     if (return_posterior)
         ans$posterior <- population$total_population
